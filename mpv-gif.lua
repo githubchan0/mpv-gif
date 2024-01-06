@@ -1,190 +1,108 @@
--- Original by Ruin0x11
--- Ported to Windows by Scheliux, Dragoner7
-
--- Create animated GIFs with mpv
--- Requires ffmpeg.
--- Adapted from http://blog.pkh.me/p/21-high-quality-gif-with-ffmpeg.html
--- Usage: "g" to set start frame, "G" to set end frame, "Ctrl+g" to create.
-
-require 'mp.options'
-local msg = require 'mp.msg'
-
-local options = {
-    dir = "C:/Program Files/mpv/gifs",
-    rez = 600,
-    fps = 15,
-}
-
-read_options(options, "gif")
-
-
-local fps
-
--- Check for invalid fps values
--- Can you believe Lua doesn't have a proper ternary operator in the year of our lord 2020?
-if options.fps ~= nil and options.fps >= 1 and options.fps < 30 then
-    fps = options.fps
-else
-    fps = 15
-end
-
--- Set this to the filters to pass into ffmpeg's -vf option.
--- filters="fps=24,scale=320:-1:flags=spline"
-filters=string.format("fps=%s,scale='trunc(ih*dar/2)*2:trunc(ih/2)*2',setsar=1/1,scale=%s:-1:flags=spline", fps, options.rez) --change spline to lanczos depending on preference
-
--- Setup output directory
-output_directory=string.gsub(options.dir, '\"', '')
-
 start_time = -1
 end_time = -1
-palette="%TEMP%palette.png"
-
--- The roundabout way has to be used due to a some weird
--- behavior with %TEMP% on the subtitles= parameter in ffmpeg
--- on Windows–it needs to be quadruple backslashed
-subs = "C:/Users/%USERNAME%/AppData/Local/Temp/subs.srt"
-
-function make_gif_with_subtitles()
-    make_gif_internal(true)
-end
+fps_presets = {5, 8, 10, 15, 18, 20, 23, 25, 30, "source"}
+fps_index = 4
+width_presets = {1920, 1280, 854, 640, 426, -1}
+height_presets = {1080, 720, 480, 360, 240, -1}
+size_index = 5
+dithering_options = {"sierra2_4a", "floyd_steinberg", "bayer:bayer_scale=2", "bayer:bayer_scale=3", "none"}
+dithering_index = 1
 
 function make_gif()
-    make_gif_internal(false)
-end    
+   local start_time_l = start_time
+   local end_time_l = end_time
+   if start_time_l == -1 or end_time_l == -1 or start_time_l >= end_time_l then
+       mp.osd_message("Invalid start/end time.")
+       return
+   end
 
-function table_length(t)
-    local count = 0
-    for _ in pairs(t) do count = count + 1 end
-    return count
-end
+   mp.osd_message("Creating GIF.")
 
+   local video_path = mp.get_property("path")
 
-function make_gif_internal(burn_subtitles)
-    local start_time_l = start_time
-    local end_time_l = end_time
-    if start_time_l == -1 or end_time_l == -1 or start_time_l >= end_time_l then
-        mp.osd_message("Invalid start/end time.")
-        return
-    end
+   local position = start_time_l
+   local duration = end_time_l - start_time_l - 1
+   if duration < 0 then
+       duration = 0
+   end
 
-    mp.osd_message("Creating GIF.")
+   local current_date_time = os.date("%Y%m%d_%H%M%S")
+   local video_filename = mp.get_property("filename")
+   local gif_filename = video_filename:gsub("%.[^.]+$", "") .. "_" .. current_date_time .. ".gif"
 
-    -- shell escape
-    function esc(s)
-        return string.gsub(s, '"', '"\\""')
-    end
+   local directory_path = video_path:match("(.*/)")
+   if not directory_path then
+       directory_path = ""
+   end
 
-    function esc_for_sub(s)
-        s = string.gsub(s, [[\]], [[/]])
-        s = string.gsub(s, '"', '"\\""')
-        s = string.gsub(s, ":", [[\\:]])
-        s = string.gsub(s, "'", [[\\']])
-        return s
-    end
+   local gif_path = directory_path .. gif_filename
 
-    local pathname = mp.get_property("path", "")
-    local trim_filters = esc(filters)
+   local dithering_option = dithering_options[dithering_index]
 
-    local position = start_time_l
-    local duration = end_time_l - start_time_l
+   local fps_value = fps_presets[fps_index]
+   local fps_filter = ""
 
-    if burn_subtitles then
-        -- Determine currently active sub track
+   if type(fps_value) == "number" then
+       fps_filter = string.format('setpts=1.0*PTS,fps=%d', fps_value)
+   elseif fps_value == "source" then
+       local ffprobe_cmd = string.format('ffprobe -v error -select_streams v -of default=noprint_wrappers=1:nokey=1 -show_entries stream=r_frame_rate %q', video_path)
+       local ffprobe_output = io.popen(ffprobe_cmd):read('*all')
+       local source_fps = ffprobe_output:match('(%d+)/(%d+)')
 
-        local i = 0
-        local tracks_count = mp.get_property_number("track-list/count")
-        local subs_array = {}
-        
-        -- check for subtitle tracks
+       if source_fps then
+           source_fps = tonumber(source_fps)
+           fps_filter = string.format('fps=%d', source_fps)
+       else
+           mp.osd_message("Could not determine source FPS.")
+           return
+       end
+   else
+       mp.osd_message("Invalid FPS value.")
+       return
+   end
 
-        while i < tracks_count do
-            local type = mp.get_property(string.format("track-list/%d/type", i))
-            local selected = mp.get_property(string.format("track-list/%d/selected", i))
+   local ffmpeg_args = string.format('ffmpeg -ss %s -t %s -i %q -vf %s,scale=w=%d:h=%d:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=%s -loop 0 -y %q',
+                              position, duration, video_path, fps_filter, width_presets[size_index], height_presets[size_index], dithering_option, gif_path)
 
-            -- if it's a sub track, save it
-
-            if type == "sub" then
-                local length = table_length(subs_array)
-                subs_array[length] = selected == "yes"
-            end
-            i = i + 1
-        end
-
-        if table_length(subs_array) > 0 then
-
-            local correct_track = 0
-
-            -- iterate through saved subtitle tracks until the correct one is found
-
-            for index, is_selected in pairs(subs_array) do
-                if (is_selected) then
-                    correct_track = index
-                end
-            end
-
-            trim_filters = trim_filters .. string.format(",subtitles=%s:si=%s", esc_for_sub(pathname), correct_track)
-
-        end
-
-    end
-
-
-    -- first, create the palette
-    args = string.format('ffmpeg -v warning -ss %s -t %s -i "%s" -vf "%s,palettegen" -y "%s"', position, duration, esc(pathname), esc(trim_filters), esc(palette))
-    msg.debug(args)
-    os.execute(args)
-
-    -- then, make the gif
-    local filename = mp.get_property("filename/no-ext")
-    local file_path = output_directory .. "/" .. filename
-
-    -- increment filename
-    for i=0,999 do
-        local fn = string.format('%s_%03d.gif',file_path,i)
-        if not file_exists(fn) then
-            gifname = fn
-            break
-        end
-    end
-    if not gifname then
-        mp.osd_message('No available filenames!')
-        return
-    end
-
-    local copyts = ""
-
-    if burn_subtitles then
-        copyts = "-copyts"
-    end
-
-    args = string.format('ffmpeg -v warning -ss %s %s -t %s -i "%s" -i "%s" -lavfi "%s [x]; [x][1:v] paletteuse" -y "%s"', position, copyts, duration, esc(pathname), esc(palette), esc(trim_filters), esc(gifname))
-    os.execute(args)
-
-    local ok, err, code = os.rename(gifname, gifname)
-	if ok then
-	    msg.info("GIF created: " .. gifname)
-	    mp.osd_message("GIF created: " .. gifname)
-	else
-	    mp.osd_message("Error creating file, check CLI for more info.")
-	end
+   os.execute(ffmpeg_args)
 end
 
 function set_gif_start()
-    start_time = mp.get_property_number("time-pos", -1)
-    mp.osd_message("GIF Start: " .. start_time)
+   start_time = mp.get_property_number("time-pos", -1)
+   mp.osd_message("GIF Start: " .. start_time)
 end
 
 function set_gif_end()
-    end_time = mp.get_property_number("time-pos", -1)
-    mp.osd_message("GIF End: " .. end_time)
+   end_time = mp.get_property_number("time-pos", -1)
+   mp.osd_message("GIF End: " .. end_time)
 end
 
-function file_exists(name)
-    local f=io.open(name,"r")
-    if f~=nil then io.close(f) return true else return false end
+function cycle_fps()
+  fps_index = (fps_index % #fps_presets) + 1
+  mp.osd_message("FPS: " .. fps_presets[fps_index])
+end
+
+function adjust_size(increase)
+   if increase then
+       size_index = size_index % #width_presets + 1
+   elseif size_index == 6 then
+       mp.osd_message("Size: source")
+       return
+   else
+       size_index = (size_index - 2) % #width_presets + 1
+   end
+
+   mp.osd_message("Size: " .. (size_index == 6 and "source" or (width_presets[size_index] .. "x" .. height_presets[size_index])))
+end
+
+function cycle_dithering()
+   dithering_index = dithering_index % #dithering_options + 1
+   mp.osd_message("Dithering: " .. dithering_options[dithering_index])
 end
 
 mp.add_key_binding("g", "set_gif_start", set_gif_start)
-mp.add_key_binding("G", "set_gif_end", set_gif_end)
+mp.add_key_binding("h", "set_gif_end", set_gif_end)
+mp.add_key_binding("Ctrl+s", "adjust_width", function() adjust_size(true) end)
+mp.add_key_binding("Ctrl+d", "cycle_dithering", cycle_dithering)
+mp.add_key_binding("Ctrl+f", "cycle_fps", cycle_fps)
 mp.add_key_binding("Ctrl+g", "make_gif", make_gif)
-mp.add_key_binding("Ctrl+G", "make_gif_with_subtitles", make_gif_with_subtitles)

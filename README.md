@@ -3,8 +3,8 @@ This is a port of his gif generator script for Windows.
  
 # Installation
 
-`FFmpeg` and `FFmprobe` on path
-copy `mpv-gif.lua` to \config\scripts 
+`FFmpeg` and `FFmprobe` on path.
+Copy `mpv-gif.lua` to \config\scripts.
  
 ## Hotkeys
 

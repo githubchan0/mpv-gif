@@ -14,3 +14,4 @@ Copy `mpv-gif.lua` to \config\scripts.
 * `CTRL+d` - Cycle dithering
 * `CTRL+f` - Cycle fps
 * `CTRL+g` - Output GIF
+* `CTRL+h` - Output full GIF
